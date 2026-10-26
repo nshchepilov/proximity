@@ -44,7 +44,7 @@ DEFAULT_ROOT = os.environ.get("PHOTO_ROOT") or os.path.expanduser("~/Pictures")
 CHUNK = 8 * 1024 * 1024
 MAX_PAIRS_STORED = 5000
 
-app = FastAPI(title="Foto-razbor")
+app = FastAPI(title="proximity")
 
 _state_lock = threading.Lock()
 _state = {
