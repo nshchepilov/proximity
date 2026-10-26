@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Foto-разбор — поиск дубликатов и схожих папок</title>
+<style>
+  :root { --bg:#12151c; --panel:#1b2029; --line:#2a3140; --text:#dfe5ee; --dim:#8b96a8; --acc:#4da3ff; --ok:#3ecf8e; --warn:#ffb454; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; }
+  .root { color:var(--dim); font-size:13px; word-break:break-all; }
+  button { background:#243044; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:#2b5d9e; border-color:#3a76c4; }
+  button:disabled { opacity:.5; cursor:default; }
+  .activity { margin:14px 16px 0; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .progress { height:8px; background:#0d1017; border-radius:4px; overflow:hidden; margin-top:8px; }
+  .progress > div { height:100%; width:0%; background:var(--acc); transition:width .3s; }
+  .act-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); flex:none; }
+  .dot.active { background:var(--acc); animation:pulse 1.2s infinite; }
+  .dot.done { background:var(--ok); }
+  .dot.error { background:#ff7b72; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .act-title { font-weight:600; }
+  .act-msg { color:var(--dim); font-size:13px; }
+  .act-msg.err { color:#ff7b72; }
+  .act-pct { margin-left:auto; color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }
+  .act-meta { margin-top:8px; color:var(--dim); font-size:12.5px; word-break:break-all; }
+  .steps { display:flex; gap:18px; flex-wrap:wrap; margin-top:9px; }
+  .step { color:var(--dim); font-size:12.5px; display:flex; align-items:center; gap:6px; }
+  .step::before { content:''; width:7px; height:7px; border-radius:50%; background:#2a3140; flex:none; }
+  .step.active { color:var(--text); }
+  .step.active::before { background:var(--acc); animation:pulse 1.2s infinite; }
+  .step.done { color:var(--ok); }
+  .step.done::before { background:var(--ok); }
+  .badge.needs { color:var(--warn); }
+  .tabs { display:flex; gap:4px; padding:12px 16px 0; }
+  .tab { padding:8px 16px; border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0; background:#171c25; cursor:pointer; color:var(--dim); }
+  .tab.active { background:var(--panel); color:var(--text); border-color:var(--acc); }
+  main { padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input[type=text], input[type=number] { background:#0d1017; border:1px solid var(--line); color:var(--text); border-radius:6px; padding:7px 10px; font-size:13px; }
+  input[type=range] { accent-color:var(--acc); }
+  label.ctl { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--dim); }
+  .summary { font-size:14px; margin-bottom:8px; }
+  .summary b { color:var(--warn); }
+  .group { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; overflow:hidden; background:#161b23; }
+  .group-head { display:flex; gap:14px; align-items:center; padding:9px 12px; cursor:pointer; flex-wrap:wrap; }
+  .group-head:hover { background:#1c2330; }
+  .badge { background:#243044; border-radius:5px; padding:2px 8px; font-size:12px; color:var(--dim); }
+  .badge.warn { color:var(--warn); }
+  table.files { width:100%; border-collapse:collapse; display:none; }
+  .group.open table.files { display:table; }
+  table.files th, table.files td { text-align:left; padding:6px 12px; border-top:1px solid var(--line); font-size:13px; word-break:break-all; }
+  table.files th { color:var(--dim); font-weight:normal; font-size:12px; background:#141922; }
+  .pair { border:1px solid var(--line); border-radius:8px; margin-bottom:12px; background:#161b23; }
+  .pair-head { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 14px; cursor:pointer; }
+  .sim { font-size:15px; font-weight:600; color:var(--ok); min-width:58px; }
+  .path { word-break:break-all; font-family:Consolas, monospace; font-size:12.5px; }
+  .pair-body { display:none; padding:4px 14px 12px; border-top:1px solid var(--line); }
+  .pair.open .pair-body { display:block; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .chip { background:#0d1017; border:1px solid var(--line); border-radius:5px; padding:3px 9px; font-size:12px; color:var(--dim); max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hint { color:var(--dim); font-size:12.5px; margin-top:8px; }
+  .err { color:#ff7b72; }
+  .openbtn { background:#0d1017; border:1px solid var(--line); border-radius:5px; color:var(--dim); font-size:11.5px; padding:3px 9px; cursor:pointer; flex:none; }
+  .openbtn:hover { color:var(--text); border-color:var(--acc); }
+  .upbtn { background:#0d1017; border:1px solid var(--line); border-radius:5px; color:var(--acc); font-size:11.5px; padding:3px 9px; cursor:pointer; flex:none; }
+  .upbtn:hover { color:var(--text); }
+  .delbtn { background:#0d1017; border:1px solid var(--line); border-radius:5px; color:var(--dim); font-size:11.5px; padding:3px 9px; cursor:pointer; flex:none; }
+  .delbtn:hover { color:#ff7b72; border-color:#ff7b72; }
+  .expand-hint { color:var(--dim); font-size:12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foto-разбор</h1>
+  <span class="root" id="rootLabel"></span>
+  <button class="primary" id="btnScan">Запустить скан</button>
+  <button id="btnRefreshCfg">Обновить</button>
+</header>
+
+<div class="activity" id="activityFrame">
+  <div class="act-head">
+    <span class="dot" id="actDot"></span>
+    <span class="act-title" id="actTitle">Проверка статуса…</span>
+    <span class="act-msg" id="actMsg"></span>
+    <span class="badge needs" id="actNeeds" style="display:none">⚠ требуется скан — в кэше нет файлов</span>
+    <span style="flex:1"></span>
+    <span class="act-pct" id="actPct"></span>
+  </div>
+  <div class="progress"><div id="progFill"></div></div>
+  <div class="steps">
+    <span class="step" data-step="scan">1 · Обход файловой системы</span>
+    <span class="step" data-step="hash">2 · Хеширование</span>
+    <span class="step" data-step="folders">3 · Сравнение папок</span>
+  </div>
+  <div class="act-meta" id="actMeta"></div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="dups">Дубликаты файлов</div>
+  <div class="tab" data-tab="folders">Схожие папки</div>
+</div>
+
+<main>
+  <!-- ================= ДУБЛИКАТЫ ================= -->
+  <section id="tab-dups">
+    <div class="card controls">
+      <label class="ctl">Критерий
+        <select id="dupMode" style="background:#0d1017;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px 10px;">
+          <option value="hash">Полный хеш (SHA-256)</option>
+          <option value="meta">Метаданные (размер + mtime)</option>
+        </select>
+      </label>
+      <label class="ctl">Размер от, байт<input type="number" id="dupMinSize" value="0" min="0"></label>
+      <label class="ctl">Расширение (напр. jpg)<input type="text" id="dupExt" placeholder="jpg"></label>
+      <label class="ctl">Поиск по имени/пути<input type="text" id="dupQ" placeholder="2023"></label>
+      <button class="primary" id="btnDups">Найти</button>
+    </div>
+
+    <div class="card" id="dupsSummaryCard" style="display:none;">
+      <div class="summary" id="dupsSummary"></div>
+      <div class="controls">
+        <button id="btnExpandAll">Развернуть все</button>
+        <button id="btnCollapseAll">Свернуть все</button>
+        <span style="flex:1"></span>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;">
+          <input type="checkbox" id="keepFirst" checked> отмечать первый файл группы как «оставить»
+        </label>
+        <button class="primary" id="btnExportDups">Экспорт CSV</button>
+      </div>
+      <div class="hint">Отметьте галочкой файлы, которые хотите ОСТАВИТЬ (остальные в группе — кандидаты на удаление). Экспортируйте CSV и удалите вручную.</div>
+    </div>
+
+    <div id="dupsList"></div>
+  </section>
+
+  <!-- ================= ПАПКИ ================= -->
+  <section id="tab-folders" style="display:none;">
+    <div class="card controls">
+      <label class="ctl">Сходство не менее<input type="range" id="foldThresh" min="10" max="100" value="50" step="5"><span id="threshVal">50%</span></label>
+      <label class="ctl">Общих файлов минимум<input type="number" id="foldMinCommon" value="1" min="1"></label>
+      <button class="primary" id="btnFolders">Найти</button>
+    </div>
+
+    <div class="card" id="foldersSummaryCard" style="display:none;">
+      <div class="summary" id="foldersSummary"></div>
+      <span style="flex:1"></span>
+      <button class="primary" id="btnExportFolders">Экспорт CSV</button>
+    </div>
+
+    <div class="card" id="expandCard" style="display:none;">
+      <div class="controls">
+        <button id="btnExpandBack">⬅ назад к парам</button>
+        <span class="expand-hint">Сходство двух деревьев целиком; порог и минимум общих файлов — из настроек выше</span>
+      </div>
+      <div id="expandTop" style="margin-top:10px;"></div>
+      <div class="expand-hint" style="margin:12px 0 8px;">Группы схожих подпапок между деревьями:</div>
+      <div id="expandGroups"></div>
+    </div>
+
+    <div id="foldersList"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmtBytes = n => { if (n >= 1e12) return (n/1e12).toFixed(2)+' ТБ'; if (n>=1e9) return (n/1e9).toFixed(2)+' ГБ'; if (n>=1e6) return (n/1e6).toFixed(1)+' МБ'; if (n>=1e3) return (n/1e3).toFixed(0)+' КБ'; return n+' Б'; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  $('#tab-dups').style.display = t.dataset.tab === 'dups' ? '' : 'none';
+  $('#tab-folders').style.display = t.dataset.tab === 'folders' ? '' : 'none';
+});
+
+$('#threshVal') && ($('#foldThresh').oninput = e => $('#threshVal').textContent = e.target.value + '%');
+
+async function loadConfig() {
+  const r = await fetch('/api/config'); const c = await r.json();
+  $('#rootLabel').textContent = 'Корень: ' + c.root;
+}
+
+let pollTimer = null;
+let lastPhase = null;
+
+const fmtTime = t => t ? new Date(t * 1000).toLocaleString('ru', {dateStyle:'short', timeStyle:'short'}) : '—';
+const STEP_IDX = { scan:0, hash:1, folders:2 };
+const TITLES = {
+  idle: 'Ожидание', scan: 'Обход файловой системы', hash: 'Хеширование файлов',
+  folders: 'Сравнение составов папок', done: 'Готово — кэш заполнен', error: 'Ошибка'
+};
+
+function setStatus(phase, progress, message) {
+  const cur = STEP_IDX[phase];
+  document.querySelectorAll('.step').forEach((el, i) => {
+    el.classList.toggle('active', cur === i);
+    el.classList.toggle('done', cur !== undefined && i < cur);
+  });
+  $('#actTitle').textContent = TITLES[phase] || 'Ожидание';
+  const msg = $('#actMsg');
+  msg.textContent = message || '';
+  msg.classList.toggle('err', phase === 'error');
+  const dot = $('#actDot');
+  dot.className = 'dot' + (phase === 'done' ? ' done' : phase === 'error' ? ' error' : cur !== undefined ? ' active' : '');
+  let pct;
+  if (phase === 'error') pct = null;
+  else if (phase === 'done') pct = 1;
+  else pct = progress || 0;
+  $('#progFill').style.width = (pct === null ? 0 : Math.round(pct * 100)) + '%';
+  $('#actPct').textContent = pct === null ? '' : phase === 'done' ? '100%' : Math.round(pct * 100) + '%';
+}
+
+function schedule(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(pollStatus, ms); }
+
+async function pollStatus() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    setStatus(s.phase, s.progress, s.message);
+    $('#actMeta').textContent =
+      `Корень: ${s.root} · файлов в кэше: ${Number(s.db_file_count||0).toLocaleString('ru')}` +
+      ` · последний скан: ${fmtTime(s.last_scan)}`;
+    const busy = s.phase === 'scan' || s.phase === 'hash' || s.phase === 'folders';
+    $('#actNeeds').style.display = (s.scan_required && !busy && s.phase !== 'error') ? '' : 'none';
+    $('#btnScan').disabled = busy;
+    if (busy) {
+      schedule(1500);
+    } else {
+      if (s.phase === 'done' && lastPhase !== 'done') { loadDups(); loadFolders(); }
+      schedule(5000);
+    }
+    lastPhase = s.phase;
+  } catch (e) {
+    setStatus('error', null, 'Сервер недоступен — проверьте, что запущен python app.py');
+    schedule(5000);
+  }
+}
+
+$('#btnScan').onclick = async () => {
+  $('#btnScan').disabled = true;
+  await fetch('/api/scan', {method:'POST'});
+  pollStatus();
+};
+$('#btnRefreshCfg').onclick = loadConfig;
+
+// ---------- дубликаты ----------
+let dupsData = null;
+function dupParams() {
+  return `mode=${$('#dupMode').value}&min_size=${$('#dupMinSize').value||0}&ext=${encodeURIComponent($('#dupExt').value)}&q=${encodeURIComponent($('#dupQ').value)}`;
+}
+
+async function loadDups() {
+  const r = await fetch('/api/duplicates?' + dupParams());
+  dupsData = await r.json();
+  renderDups();
+}
+
+function renderDups() {
+  if (!dupsData) return;
+  $('#dupsSummaryCard').style.display = '';
+  $('#dupsSummary').innerHTML = `Групп: <b>${dupsData.groups.length}</b> · файлов в группах: <b>${dupsData.files.toLocaleString('ru')}</b> · потенциально освободится: <b>${fmtBytes(dupsData.waste)}</b>`;
+  const list = $('#dupsList'); list.innerHTML = '';
+  if (!dupsData.groups.length) { list.innerHTML = '<div class="card">Дубликаты не найдены.</div>'; return; }
+  dupsData.groups.forEach((g, gi) => {
+    const el = document.createElement('div'); el.className = 'group';
+    const keepFirst = $('#keepFirst').checked ? [0] : [];
+    let rows = '';
+    g.files.forEach((f, i) => {
+      rows += `<tr>
+        <td><input type="checkbox" data-g="${gi}" data-f="${i}" ${keepFirst.includes(i)?'checked':''}></td>
+        <td class="path">${esc(f.path)}</td>
+        <td>${fmtBytes(f.size)}</td>
+      </tr>`;
+    });
+    el.innerHTML = `
+      <div class="group-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="badge warn">×${g.count}</span>
+        <span class="badge">${fmtBytes(g.size)} / файл</span>
+        <span class="badge">потеря ${fmtBytes(g.waste)}</span>
+        <span class="path" style="flex:1;min-width:200px;">${esc(g.files[0].name)}</span>
+      </div>
+      <table class="files"><tr><th></th><th>Путь</th><th>Размер</th></tr>${rows}</table>`;
+    list.appendChild(el);
+  });
+}
+
+$('#btnDups').onclick = loadDups;
+$('#btnExpandAll').onclick = () => document.querySelectorAll('.group').forEach(g => g.classList.add('open'));
+$('#btnCollapseAll').onclick = () => document.querySelectorAll('.group').forEach(g => g.classList.remove('open'));
+$('#keepFirst').onchange = renderDups;
+
+$('#btnExportDups').onclick = async () => {
+  if (!dupsData) return alert('Сначала найдите дубликаты');
+  const keep = [];
+  document.querySelectorAll('#dupsList input[type=checkbox]:checked').forEach(cb => {
+    const gi = +cb.dataset.g, fi = +cb.dataset.f;
+    keep.push(dupsData.groups[gi].files[fi].id);
+  });
+  const body = JSON.stringify({ mode: $('#dupMode').value, min_size:+($('#dupMinSize').value||0), ext:$('#dupExt').value, q:$('#dupQ').value, keep });
+  const r = await fetch('/api/export/duplicates', {method:'POST', headers:{'Content-Type':'application/json'}, body});
+  const blob = await r.blob();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'duplicates.csv'; a.click();
+};
+
+// ---------- папки ----------
+let foldersData = null;
+function foldParams() { return `threshold=${($('#foldThresh').value/100)}&min_common=${$('#foldMinCommon').value||1}`; }
+
+async function loadFolders() {
+  $('#expandCard').style.display = 'none';
+  $('#foldersList').style.display = '';
+  const r = await fetch('/api/folders?' + foldParams());
+  foldersData = await r.json();
+  renderFolders();
+}
+
+function renderFolders() {
+  if (!foldersData) return;
+  $('#foldersSummaryCard').style.display = '';
+  $('#foldersSummary').innerHTML = `Найдено пар папок: <b>${foldersData.total_pairs}</b>`;
+  const list = $('#foldersList'); list.innerHTML = '';
+  if (!foldersData.pairs.length) { list.innerHTML = '<div class="card">Схожих папок не найдено.</div>'; return; }
+  foldersData.pairs.forEach(p => {
+    const el = document.createElement('div'); el.className = 'pair';
+    const chips = p.files.slice(0, 60).map(f => `<span class="chip" title="${esc(f)}">${esc(f)}</span>`).join('') + (p.files.length > 60 ? `<span class="chip">… ещё ${p.files.length-60}</span>` : '');
+    el.innerHTML = `
+      <div class="pair-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="sim">${Math.round(p.similarity*100)}%</span>
+        <span class="badge">общих: ${p.common}</span>
+        <span class="badge">A: ${p.count_a} ф.</span>
+        <span class="badge">B: ${p.count_b} ф.</span>
+        <span class="path" style="flex:1;min-width:200px;">${esc(p.a)} ↔ ${esc(p.b)}</span>
+        <button class="upbtn" data-upa="${esc(p.a)}" data-upb="${esc(p.b)}" title="Сравнить родительские папки A и B (подъём на уровень выше)">⬆ ур.</button>
+        <button class="openbtn" data-open="${esc(p.a)}" title="Открыть папку A в проводнике">📁 A</button>
+        <button class="openbtn" data-open="${esc(p.b)}" title="Открыть папку B в проводнике">📁 B</button>
+        <button class="delbtn" data-dela="${esc(p.a)}" data-delb="${esc(p.b)}" title="Удалить пару из выдачи: из кэша будет удалена папка, которой больше нет на диске">🗑</button>
+      </div>
+      <div class="pair-body"><div class="hint">Общие файлы (имя+размер):</div><div class="chips">${chips}</div></div>`;
+    list.appendChild(el);
+  });
+}
+
+$('#btnFolders').onclick = loadFolders;
+
+// ---------- подъём на уровень выше («⬆ ур.») ----------
+function fileChipsHtml(files) {
+  const cut = files.slice(0, 60);
+  const chips = cut.map(s => {
+    s = String(s);
+    const i = s.lastIndexOf('|');
+    return `<span class="chip" title="${esc(s.slice(0, i))}">${esc(s.slice(0, i))} · ${fmtBytes(+s.slice(i + 1))}</span>`;
+  }).join('');
+  return chips + (files.length > 60 ? `<span class="chip">… ещё ${files.length - 60}</span>` : '');
+}
+
+function expandRowHtml(p, isTop, chipsHtml) {
+  return `
+    <div class="pair-head" onclick="this.parentElement.classList.toggle('open')">
+      <span class="sim">${Math.round(p.similarity*100)}%</span>
+      <span class="badge">общих: ${p.common}</span>
+      <span class="badge">A: ${p.count_a} ф.</span>
+      <span class="badge">B: ${p.count_b} ф.</span>
+      <span class="badge">${isTop ? 'деревья целиком' : 'подпапки'}</span>
+      <span class="path" style="flex:1;min-width:200px;">${esc(p.a)} ↔ ${esc(p.b)}</span>
+      ${isTop ? '' : `<button class="upbtn" data-upa="${esc(p.a)}" data-upb="${esc(p.b)}" title="Сравнить родительские папки этой пары (подъём ещё на уровень)">⬆ ещё на уровень</button>`}
+      <button class="openbtn" data-open="${esc(p.a)}" title="Открыть папку A в проводнике">📁 A</button>
+      <button class="openbtn" data-open="${esc(p.b)}" title="Открыть папку B в проводнике">📁 B</button>
+    </div>
+    <div class="pair-body"><div class="hint">${isTop ? 'Общие файлы деревьев (имя+размер):' : 'Общие файлы (имя+размер):'}</div><div class="chips">${chipsHtml}</div></div>`;
+}
+
+function showExpand(d) {
+  $('#foldersSummaryCard').style.display = 'none';
+  $('#foldersList').style.display = 'none';
+  $('#expandCard').style.display = '';
+
+  const top = document.createElement('div');
+  top.className = 'pair';
+  const cf = d.common_files.slice(0, 60).map(f =>
+    `<span class="chip" title="${esc(f.name)}">${esc(f.name)} · ${fmtBytes(f.size)}</span>`
+  ).join('') + (d.common_files.length > 60 ? `<span class="chip">… ещё ${d.common_files.length - 60}</span>` : '');
+  top.innerHTML = expandRowHtml(
+    { a: d.a, b: d.b, similarity: d.similarity, common: d.common, count_a: d.count_a, count_b: d.count_b },
+    true, cf
+  );
+  $('#expandTop').innerHTML = '';
+  $('#expandTop').appendChild(top);
+
+  const groupsBox = $('#expandGroups');
+  groupsBox.innerHTML = '';
+  if (!d.groups.length) {
+    groupsBox.innerHTML = '<div class="expand-hint">Схожих подпапок между деревьями не найдено.</div>';
+  }
+  d.groups.forEach(g => {
+    const el = document.createElement('div');
+    el.className = 'pair';
+    el.innerHTML = expandRowHtml(g, false, fileChipsHtml(g.files));
+    groupsBox.appendChild(el);
+  });
+}
+
+async function expandPair(a, b) {
+  const body = JSON.stringify({
+    a, b,
+    threshold: ($('#foldThresh').value / 100),
+    min_common: +($('#foldMinCommon').value || 1),
+  });
+  const r = await fetch('/api/folders/expand', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(data.detail || 'Ошибка подъёма на уровень: HTTP ' + r.status);
+  showExpand(data);
+  $('#expandCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('.upbtn');
+  if (!b) return;
+  e.stopPropagation(); // не разворачиваем пару
+  e.preventDefault();
+  expandPair(b.dataset.upa, b.dataset.upb);
+}, true);
+
+// ---------- удаление отработанной пары («🗑») ----------
+async function deletePair(a, b) {
+  const body = c => JSON.stringify({ a, b, confirm: c });
+  // 1) предпросмотр: что и сколько будет удалено из кэша
+  const pr = await fetch('/api/folders/delete-pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(false) });
+  const pd = await pr.json().catch(() => ({}));
+  if (!pr.ok) return alert(pd.detail || 'Ошибка удаления: HTTP ' + pr.status);
+  // 2) подтверждение пользователя
+  const msg =
+    'Папки больше нет на диске:\n' + pd.missing.join('\n') +
+    `\n\nБудет удалено из кэша: папок ${pd.folders}, файлов ${pd.files}.\nДействие необратимо. Удалить?`;
+  if (!confirm(msg)) return;
+  // 3) собственно удаление
+  const r = await fetch('/api/folders/delete-pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(true) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(d.detail || 'Ошибка удаления: HTTP ' + r.status);
+  alert(`Из кэша удалено: папок ${(d.deleted || []).length}, файлов ${d.files}`);
+  loadFolders(); // обновляем выдачу
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('.delbtn');
+  if (!b) return;
+  e.stopPropagation(); // не разворачиваем пару
+  e.preventDefault();
+  deletePair(b.dataset.dela, b.dataset.delb);
+}, true);
+
+$('#btnExpandBack').onclick = () => {
+  $('#expandCard').style.display = 'none';
+  $('#foldersSummaryCard').style.display = '';
+  $('#foldersList').style.display = '';
+};
+
+// открытие папок A/B в проводнике
+document.addEventListener('click', e => {
+  const b = e.target.closest('.openbtn');
+  if (!b) return;
+  e.stopPropagation(); // не разворачиваем пару
+  e.preventDefault();
+  fetch('/api/open-folder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: b.dataset.open })
+  }).then(r => {
+    if (!r.ok) return r.json().then(j => { throw new Error(j.detail || 'ошибка'); });
+  }).catch(err => alert('Не удалось открыть папку в проводнике: ' + err.message));
+}, true);
+$('#btnExportFolders').onclick = async () => {
+  const r = await fetch('/api/export/folders?' + foldParams());
+  const blob = await r.blob();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'similar_folders.csv'; a.click();
+};
+
+loadConfig(); pollStatus();
+</script>
+</body>
+</html>
