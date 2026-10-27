@@ -138,14 +138,22 @@ class OpenFolderModel(BaseModel):
 
 @app.post("/api/open-folder")
 def api_open_folder(m: OpenFolderModel):
-    """Открывает папку в проводнике. Разрешены только пути внутри корня сканирования."""
+    """Открывает папку в проводнике. Разрешены только пути внутри корня сканирования.
+
+    Если папки больше нет на диске, её путь автоматически удаляется из кэша
+    скана, чтобы устаревшая пара не появлялась в выдаче снова.
+    """
     p = os.path.abspath(os.path.expandvars(m.path.strip()))
     root_nc = os.path.normcase(get_root())
     p_nc = os.path.normcase(p)
     if not (p_nc == root_nc or p_nc.startswith(root_nc + os.sep)):
         raise HTTPException(400, "Путь вне корня сканирования")
     if not os.path.isdir(p):
-        raise HTTPException(404, f"Папка не найдена: {p}")
+        drop, files = _purge_paths_from_cache([p], latest_scan_id())
+        msg = f"Папка не найдена: {p}"
+        if drop:
+            msg += f". Удалено из кэша: папок {len(drop)}, файлов {files}"
+        raise HTTPException(404, msg)
     if hasattr(os, "startfile"):
         os.startfile(p)  # noqa: S606 — открытие папки в проводнике Windows
     else:
@@ -640,12 +648,6 @@ class ExpandModel(BaseModel):
     min_common: int = 1
 
 
-class DeletePairModel(BaseModel):
-    a: str
-    b: str
-    confirm: bool = False
-
-
 MAX_EXPAND_GROUPS = 500
 MAX_EXPAND_CHIPS = 200
 
@@ -654,6 +656,62 @@ def _inside_root(p, root):
     pn = os.path.normcase(os.path.abspath(p))
     rn = os.path.normcase(os.path.abspath(root))
     return pn == rn or pn.startswith(rn + os.sep)
+
+
+def _purge_paths_from_cache(paths, scan_id):
+    """Удаляет из кэша скана папки (вместе с подпапками) и их файлы.
+
+    Возвращает (список удалённых папок, число удалённых файлов).
+    """
+    if not scan_id or not paths:
+        return [], 0
+    conn = db_connect()
+    try:
+        folder_paths = [
+            r["path"] for r in conn.execute("SELECT path FROM folders WHERE scan_id=?", (scan_id,))
+        ]
+        drop = set()
+        for x in paths:
+            xn = os.path.normcase(x)
+            for fp in folder_paths:
+                pn = os.path.normcase(fp)
+                if pn == xn or pn.startswith(xn + os.sep):
+                    drop.add(fp)
+        if not drop:
+            return [], 0
+
+        prefixes = [os.path.normcase(x) + os.sep for x in drop]
+        file_ids = [
+            r["id"]
+            for r in conn.execute("SELECT id, path FROM files WHERE scan_id=?", (scan_id,))
+            if any(os.path.normcase(r["path"]).startswith(pref) for pref in prefixes)
+        ]
+
+        def chunks(seq, size):
+            seq = list(seq)
+            for i in range(0, len(seq), size):
+                yield seq[i:i + size]
+
+        conn.execute("BEGIN")
+        for chunk in chunks(file_ids, 500):
+            conn.execute(
+                f"DELETE FROM files WHERE id IN ({','.join('?' * len(chunk))})", chunk
+            )
+        for chunk in chunks(drop, 500):
+            marks = ",".join("?" * len(chunk))
+            conn.execute(f"DELETE FROM folders WHERE path IN ({marks})", chunk)
+            conn.execute(
+                f"DELETE FROM folder_stats WHERE scan_id=? AND path IN ({marks})", [scan_id] + chunk
+            )
+            conn.execute(
+                f"DELETE FROM folder_pairs WHERE scan_id=? AND (a IN ({marks}) OR b IN ({marks}))",
+                [scan_id] + chunk + chunk,
+            )
+        conn.execute("DELETE FROM expanded_cache WHERE scan_id=?", (scan_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return sorted(drop), len(file_ids)
 
 
 def _subtree_pair_analysis(pa, pb, threshold, min_common, scan_id):
@@ -772,11 +830,14 @@ def api_folders_expand(m: ExpandModel):
     pa = os.path.dirname(os.path.abspath(m.a))
     pb = os.path.dirname(os.path.abspath(m.b))
     for p, label in ((pa, "A"), (pb, "B")):
-        if _inside_root(p, root) and os.path.isdir(p):
-            continue
-        raise HTTPException(
-            400, f"Папка {label} уже на верхнем уровне — выше только корень сканирования"
-        )
+        if not _inside_root(p, root):
+            raise HTTPException(
+                400, f"Папка {label} уже на верхнем уровне — выше только корень сканирования"
+            )
+    # Сравнение идёт по кэшу скана, поэтому папки-родители могут уже
+    # отсутствовать на диске (переименованы/удалены после скана). Это не
+    # мешает подъёму, но результат основан на данных кэша — предупредим.
+    missing = [p for p in (pa, pb) if not os.path.isdir(p)]
     na, nb = os.path.normcase(pa), os.path.normcase(pb)
     if na == nb:
         raise HTTPException(
@@ -793,99 +854,24 @@ def api_folders_expand(m: ExpandModel):
     finally:
         conn.close()
     if row:
-        return json.loads(row["result_json"])
-    result = _subtree_pair_analysis(pa, pb, m.threshold, int(m.min_common), sid)
-    payload = json.dumps(result, ensure_ascii=False)
-    conn = db_connect()
-    try:
-        conn.execute("BEGIN")
-        conn.execute("DELETE FROM expanded_cache WHERE scan_id != ?", (sid,))
-        conn.execute(
-            "INSERT OR REPLACE INTO expanded_cache(a,b,threshold,min_common,scan_id,result_json) VALUES(?,?,?,?,?,?)",
-            (pa, pb, m.threshold, int(m.min_common), sid, payload),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        result = json.loads(row["result_json"])
+    else:
+        result = _subtree_pair_analysis(pa, pb, m.threshold, int(m.min_common), sid)
+        payload = json.dumps(result, ensure_ascii=False)
+        conn = db_connect()
+        try:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM expanded_cache WHERE scan_id != ?", (sid,))
+            conn.execute(
+                "INSERT OR REPLACE INTO expanded_cache(a,b,threshold,min_common,scan_id,result_json) VALUES(?,?,?,?,?,?)",
+                (pa, pb, m.threshold, int(m.min_common), sid, payload),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    if missing:
+        result["missing"] = missing
     return result
-
-
-@app.post("/api/folders/delete-pair")
-def api_folders_delete_pair(m: DeletePairModel):
-    """Удаление отработанной пары из выдачи.
-
-    Из кэша стирается та папка пары (и все её подпапки с файлами), которой
-    больше нет на диске. Если обе папки существуют — ничего не удаляется.
-    Первый вызов (confirm=false) только считает, что будет удалено.
-    """
-    sid = latest_scan_id()
-    if not sid:
-        raise HTTPException(400, "Нет данных скана — сначала запустите скан")
-    root = get_root()
-
-    missing = []
-    for p in (m.a, m.b):
-        p = os.path.abspath(p.strip())
-        if not _inside_root(p, root):
-            raise HTTPException(400, f"Путь вне корня сканирования: {p}")
-        if not os.path.isdir(p):
-            missing.append(p)
-    if not missing:
-        raise HTTPException(
-            400, "Обе папки пары ещё существуют на диске — удалять из кэша нечего"
-        )
-
-    conn = db_connect()
-    try:
-        folder_paths = [
-            r["path"] for r in conn.execute("SELECT path FROM folders WHERE scan_id=?", (sid,))
-        ]
-        drop = set()
-        for x in missing:
-            xn = os.path.normcase(x)
-            for fp in folder_paths:
-                pn = os.path.normcase(fp)
-                if pn == xn or pn.startswith(xn + os.sep):
-                    drop.add(fp)
-
-        prefixes = [os.path.normcase(x) + os.sep for x in drop]
-        file_ids = []
-        if prefixes:
-            for r in conn.execute("SELECT id, path FROM files WHERE scan_id=?", (sid,)):
-                pn = os.path.normcase(r["path"])
-                if any(pn.startswith(pref) for pref in prefixes):
-                    file_ids.append(r["id"])
-
-        if not m.confirm:
-            return {"missing": missing, "folders": len(drop), "files": len(file_ids)}
-
-        def chunks(seq, size):
-            seq = list(seq)
-            for i in range(0, len(seq), size):
-                yield seq[i:i + size]
-
-        conn.execute("BEGIN")
-        for chunk in chunks(file_ids, 500):
-            conn.execute(
-                f"DELETE FROM files WHERE id IN ({','.join('?' * len(chunk))})", chunk
-            )
-        for chunk in chunks(drop, 500):
-            marks = ",".join("?" * len(chunk))
-            conn.execute(f"DELETE FROM folders WHERE path IN ({marks})", chunk)
-            conn.execute(
-                f"DELETE FROM folder_stats WHERE scan_id=? AND path IN ({marks})", [sid] + chunk
-            )
-            conn.execute(
-                f"DELETE FROM folder_pairs WHERE scan_id=? AND (a IN ({marks}) OR b IN ({marks}))",
-                [sid] + chunk + chunk,
-            )
-        conn.execute("DELETE FROM expanded_cache WHERE scan_id=?", (sid,))
-        conn.commit()
-    finally:
-        conn.close()
-
-    set_state(None, None, f"Из кэша удалено: папок {len(drop)}, файлов {len(file_ids)}")
-    return {"deleted": sorted(drop), "files": len(file_ids)}
 
 
 @app.get("/api/file/{fid}/raw")
